@@ -68,7 +68,7 @@
       const mod = await import('https://cdn.jsdelivr.net/npm/@hsuan741220/tw-einvoice-qr@1.0.0/+esm');
       parseLeft = (text) => {
         const result = mod.safeParseLeftQr(text);
-        if (!result.success) throw new Error(result.errors[0]?.message || 'QR 解析失敗');
+        if (!result.success) return parsePrefix(text);
         return {
           invoiceNumber: result.data.invoiceNumber,
           date: result.data.date,
