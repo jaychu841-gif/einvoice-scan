@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>發票掃碼</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; max-width: 42rem; }
+    h1 { font-size: 1.25rem; margin: 0 0 12px; }
+    label, p, button, input, select { font-size: 1rem; }
+    label { display: block; margin: 12px 0 4px; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+    .row button { flex: 1 1 5.5rem; padding: 10px; border-radius: 8px; border: 1px solid #888; background: transparent; }
+    .row button[aria-pressed="true"] { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+    #reader { width: 100%; min-height: 220px; margin: 8px 0 12px; background: #111; border-radius: 8px; overflow: hidden; }
+    .actions { display: flex; gap: 8px; margin-top: 16px; }
+    .actions button { flex: 1; padding: 14px; border: 0; border-radius: 8px; font-weight: 600; }
+    #submit { background: #1a73e8; color: #fff; }
+    #submit:disabled { opacity: .5; }
+    #rescan { background: #eee; color: inherit; }
+    #result, #error, #preview { white-space: pre-wrap; margin-top: 12px; }
+    #error { color: #c00; }
+    .ok { color: #0a7d32; }
+    .hint { color: #666; font-size: .9rem; }
+    #manual { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>發票掃碼</h1>
+  <p class="hint">請掃證明聯<strong>左邊</strong>的 QR（有發票號碼的那張）。</p>
+  <div id="reader"></div>
+  <div class="actions">
+    <button type="button" id="startCam">開啟相機</button>
+    <button type="button" id="stopCam">關閉相機</button>
+  </div>
+  <label for="manual">或貼上 QR 文字</label>
+  <textarea id="manual" rows="3" placeholder="掃不到時可把 QR 內容貼在這裡"></textarea>
+  <button type="button" id="parseManual">解析文字</button>
+
+  <div id="preview" hidden>
+    <p id="parsed"></p>
+    <label>憑證品項</label>
+    <div class="row" id="items"></div>
+    <input id="item" placeholder="餐費、油錢，或自己輸入">
+    <label for="note">備註（選填）</label>
+    <input id="note" placeholder="幾人吃飯或要跟茵茵說明的">
+    <label for="password">共用密碼</label>
+    <input id="password" type="password" autocomplete="current-password">
+    <div class="actions">
+      <button type="button" id="rescan">再掃一張</button>
+      <button type="button" id="submit">送出</button>
+    </div>
+  </div>
+  <p id="error"></p>
+  <p id="result"></p>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script type="module">
+    // 部署 Apps Script 網頁應用程式後，把網址貼在這裡。
+    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyeKUYClEQsz5fDUDvalD6TDTx0jHVR2ZFHKllwH341G1GtJAG7K2eFYht29oR7YdhNNA/exec';
+    const ITEMS = ['餐費', '油錢', '停車費', '交通', '雜支'];
+    const PASS_KEY = 'einvoice-password';
+
+    let parseLeft = null;
+    try {
+      const mod = await import('https://cdn.jsdelivr.net/npm/@hsuan741220/tw-einvoice-qr@1.0.0/+esm');
+      parseLeft = (text) => {
+        const result = mod.safeParseLeftQr(text);
+        if (!result.success) throw new Error(result.errors[0]?.message || 'QR 解析失敗');
+        return {
+          invoiceNumber: result.data.invoiceNumber,
+          date: result.data.date,
+          rocDate: result.data.rocDate,
+          sellerId: result.data.sellerIdentifier,
+          totalAmount: result.data.totalAmount,
+        };
+      };
+    } catch {
+      parseLeft = parsePrefix;
+    }
+
+    const $ = (id) => document.getElementById(id);
+    const errorEl = $('error');
+    const resultEl = $('result');
+    const preview = $('preview');
+    const itemInput = $('item');
+    const passInput = $('password');
+    passInput.value = localStorage.getItem(PASS_KEY) || '';
+
+    const itemRow = $('items');
+    ITEMS.forEach((name) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = name;
+      btn.addEventListener('click', () => {
+        itemInput.value = name;
+        itemRow.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+      });
+      itemRow.appendChild(btn);
+    });
+
+    let parsed = null;
+    let scanner = null;
+
+    function showError(msg) {
+      errorEl.textContent = msg || '';
+    }
+
+    function parsePrefix(text) {
+      const raw = String(text || '').trim();
+      if (raw.startsWith('**')) throw new Error('這是右邊的 QR，請改掃左邊（有發票號碼的那張）');
+      if (raw.length < 77) throw new Error('QR 內容太短，請掃左邊的 QR');
+      const invoiceNumber = raw.slice(0, 10);
+      if (!/^[A-Z]{2}\d{8}$/.test(invoiceNumber)) throw new Error('發票號碼格式不對，請掃左邊的 QR');
+      const rocDate = raw.slice(10, 17);
+      if (!/^\d{7}$/.test(rocDate)) throw new Error('日期格式不對');
+      const year = Number(rocDate.slice(0, 3)) + 1911;
+      const month = rocDate.slice(3, 5);
+      const day = rocDate.slice(5);
+      const sales = Number.parseInt(raw.slice(21, 29), 16);
+      const totalAmount = Number.parseInt(raw.slice(29, 37), 16);
+      if (!Number.isFinite(totalAmount)) throw new Error('金額格式不對');
+      if (Number.isFinite(sales) && totalAmount < sales) throw new Error('金額格式不對');
+      const sellerId = raw.slice(45, 53);
+      if (!/^\d{8}$/.test(sellerId)) throw new Error('賣方統編格式不對');
+      return { invoiceNumber, date: `${year}-${month}-${day}`, rocDate, sellerId, totalAmount };
+    }
+
+    function applyParsed(data) {
+      parsed = data;
+      $('parsed').textContent =
+        `日期：${data.date}\n發票號碼：${data.invoiceNumber}\n賣方統編：${data.sellerId}\n金額：${data.totalAmount}`;
+      preview.hidden = false;
+      showError('');
+      resultEl.textContent = '';
+    }
+
+    function handleScan(text) {
+      try {
+        const raw = String(text || '').trim();
+        if (raw.startsWith('**')) throw new Error('這是右邊的 QR，請改掃左邊（有發票號碼的那張）');
+        applyParsed(parseLeft(raw));
+        stopCamera();
+      } catch (err) {
+        showError(err.message || String(err));
+      }
+    }
+
+    async function startCamera() {
+      showError('');
+      if (!window.Html5Qrcode) {
+        showError('相機套件載入失敗，請改貼上 QR 文字');
+        return;
+      }
+      if (!scanner) scanner = new Html5Qrcode('reader');
+      try {
+        await scanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (text) => handleScan(text),
+        );
+      } catch (err) {
+        showError('無法開啟相機：' + (err && err.message ? err.message : err));
+      }
+    }
+
+    async function stopCamera() {
+      if (!scanner) return;
+      try { await scanner.stop(); } catch {}
+    }
+
+    $('startCam').addEventListener('click', startCamera);
+    $('stopCam').addEventListener('click', stopCamera);
+    $('parseManual').addEventListener('click', () => handleScan($('manual').value));
+    $('rescan').addEventListener('click', () => {
+      parsed = null;
+      preview.hidden = true;
+      showError('');
+      resultEl.textContent = '';
+      startCamera();
+    });
+
+    $('submit').addEventListener('click', async () => {
+      showError('');
+      resultEl.textContent = '';
+      if (!parsed) { showError('請先掃描發票'); return; }
+      const item = itemInput.value.trim();
+      if (!item) { showError('請選憑證品項'); return; }
+      const password = passInput.value;
+      if (!password) { showError('請輸入共用密碼'); return; }
+      if (!SCRIPT_URL || SCRIPT_URL.startsWith('PASTE_')) {
+        showError('還沒填 Apps Script 網址，請先部署後貼到 index.html 的 SCRIPT_URL');
+        return;
+      }
+      localStorage.setItem(PASS_KEY, password);
+      $('submit').disabled = true;
+      try {
+        const res = await fetch(SCRIPT_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            password,
+            invoiceNumber: parsed.invoiceNumber,
+            date: parsed.date,
+            sellerId: parsed.sellerId,
+            totalAmount: parsed.totalAmount,
+            item,
+            note: $('note').value.trim(),
+          }),
+          redirect: 'follow',
+        });
+        const text = await res.text();
+        let body;
+        try { body = JSON.parse(text); } catch { throw new Error('伺服器回應不是 JSON：' + text.slice(0, 200)); }
+        if (body.ok) {
+          resultEl.className = 'ok';
+          resultEl.textContent = `${body.msg}\n分頁：${body.tab}　第 ${body.row} 列\n受款單位：${body.seller}`;
+        } else {
+          resultEl.className = '';
+          resultEl.textContent = body.msg || '送出失敗';
+        }
+      } catch (err) {
+        showError(err.message || String(err));
+      } finally {
+        $('submit').disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
