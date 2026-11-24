@@ -1,0 +1,182 @@
+// 發票掃碼 → 寫入「115年7-12月正職班表」M:U。勿改 A:K。
+var SPREADSHEET_ID = '1IOeVFyiUPe5RfNSHsHsWWYC4i_e5dF2M2PJC43EFufQ';
+var HEADER_ROW = 7;
+var DATE_FORMAT = 'm月d日';
+var AMOUNT_FORMAT = '#,##0';
+var VOUCHER_TYPE = '01電子發票';
+var VOUCHER_TYPES = ['01電子發票', '02傳統發票', '03收據'];
+var PASSWORD_PROP = 'SHARED_PASSWORD';
+var GCIS_API = 'https://data.gcis.nat.gov.tw/od/data/api/5F64D864-61CB-4D0D-8AD9-492047CC1EA6';
+
+function doPost(e) {
+  return jsonOutput_(processPost_(e && e.postData && e.postData.contents));
+}
+
+function processPost_(raw) {
+  var payload;
+  try {
+    payload = parsePayload_(raw);
+  } catch (err) {
+    return fail_(err.message || String(err));
+  }
+  var expected = PropertiesService.getScriptProperties().getProperty(PASSWORD_PROP);
+  if (!expected || payload.password !== expected) return fail_('密碼錯誤');
+
+  var seller = payload.sellerId ? lookupSeller_(payload.sellerId) : '';
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return appendInvoice_(payload, seller);
+  } catch (err) {
+    return fail_(err.message || String(err));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function parsePayload_(raw) {
+  if (!raw || typeof raw !== 'string') throw new Error('沒有資料');
+  var data = JSON.parse(raw);
+  if (!data || typeof data !== 'object') throw new Error('資料格式不對');
+  var invoiceType = String(data.invoiceType || '').trim();
+  if (!invoiceType) invoiceType = VOUCHER_TYPE;
+  if (VOUCHER_TYPES.indexOf(invoiceType) === -1) throw new Error('發票類型不對');
+  var invoiceNumber = String(data.invoiceNumber || '').trim();
+  if (invoiceType === '03收據') {
+    if (invoiceNumber.length > 20 || /[\r\n\t]/.test(invoiceNumber)) throw new Error('發票號碼格式不對');
+  } else {
+    invoiceNumber = invoiceNumber.toUpperCase();
+    if (!/^[A-Z]{2}\d{8}$/.test(invoiceNumber)) throw new Error('發票號碼格式不對');
+  }
+  var dateStr = String(data.date || '').trim();
+  var date = parseIsoDate_(dateStr);
+  var sellerId = String(data.sellerId || '').trim();
+  if (sellerId && !/^\d{8}$/.test(sellerId)) throw new Error('賣方統編格式不對');
+  var totalAmount = Number(data.totalAmount);
+  if (!Number.isFinite(totalAmount) || totalAmount < 0) throw new Error('金額格式不對');
+  var item = String(data.item || '').trim();
+  if (!item) throw new Error('請選憑證品項');
+  return {
+    password: String(data.password || ''),
+    invoiceNumber: invoiceNumber,
+    date: date,
+    dateStr: dateStr,
+    sellerId: sellerId,
+    totalAmount: totalAmount,
+    item: item,
+    invoiceType: invoiceType,
+    note: String(data.note || '').trim()
+  };
+}
+
+function parseIsoDate_(value) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) throw new Error('日期格式不對');
+  var year = Number(m[1]);
+  var month = Number(m[2]);
+  var day = Number(m[3]);
+  var date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    throw new Error('日期格式不對');
+  }
+  return date;
+}
+
+function appendInvoice_(payload, seller) {
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var tab = payload.date.getMonth() + 1 + '月';
+  var sheet = ss.getSheetByName(tab);
+  if (!sheet) return fail_('找不到「' + tab + '」分頁');
+  if (payload.invoiceNumber && findExisting_(ss, payload.invoiceNumber)) return fail_('已經掃過');
+
+  var row = nextEmptyRow_(sheet);
+  var mCell = sheet.getRange('M' + row);
+  var rCell = sheet.getRange('R' + row);
+  if (!isBlank_(mCell.getValue()) || !isBlank_(rCell.getValue())) {
+    return fail_('寫入列不是空的，已取消');
+  }
+  ensureLookupFormulas_(sheet, row);
+  sheet.getRange('P' + row + ':U' + row).setValues([[
+    payload.item,
+    seller,
+    payload.invoiceNumber,
+    payload.invoiceType,
+    payload.totalAmount,
+    payload.note
+  ]]);
+  sheet.getRange('T' + row).setNumberFormat(AMOUNT_FORMAT);
+  mCell.setValue(payload.date).setNumberFormat(DATE_FORMAT);
+  return { ok: true, msg: '已寫入', row: row, tab: tab, seller: seller };
+}
+
+function findExisting_(ss, invoiceNumber) {
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    var values = sheets[i].getRange('R' + (HEADER_ROW + 1) + ':R' + sheets[i].getMaxRows()).getValues();
+    for (var r = 0; r < values.length; r++) {
+      if (String(values[r][0] || '').trim().toUpperCase() === invoiceNumber) return true;
+    }
+  }
+  return false;
+}
+
+function nextEmptyRow_(sheet) {
+  var last = Math.max(lastFilled_(sheet, 'M'), lastFilled_(sheet, 'R'), HEADER_ROW);
+  return last + 1;
+}
+
+function lastFilled_(sheet, col) {
+  var values = sheet.getRange(col + (HEADER_ROW + 1) + ':' + col + sheet.getMaxRows()).getValues();
+  for (var i = values.length - 1; i >= 0; i--) {
+    if (!isBlank_(values[i][0])) return HEADER_ROW + 1 + i;
+  }
+  return HEADER_ROW;
+}
+
+function isBlank_(value) {
+  return value === '' || value === null || value === undefined;
+}
+
+function ensureLookupFormulas_(sheet, row) {
+  fillLookup_(sheet, 'N', row, 4);
+  fillLookup_(sheet, 'O', row, 5);
+}
+
+function fillLookup_(sheet, col, row, index) {
+  var cell = sheet.getRange(col + row);
+  if (cell.getFormula()) return;
+  var above = row > HEADER_ROW + 1 ? sheet.getRange(col + (row - 1)) : null;
+  if (above && above.getFormula()) {
+    above.copyTo(cell, SpreadsheetApp.CopyPasteType.PASTE_FORMULA, false);
+    return;
+  }
+  cell.setFormula('=IFERROR(VLOOKUP(M' + row + ', B:F, ' + index + ', FALSE), "")');
+}
+
+function lookupSeller_(taxId) {
+  try {
+    var url = GCIS_API +
+      '?$format=json&$filter=' + encodeURIComponent('Business_Accounting_NO eq ' + taxId) +
+      '&$skip=0&$top=1';
+    var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
+    if (res.getResponseCode() !== 200) return taxId;
+    var text = res.getContentText();
+    if (!text) return taxId;
+    var data = JSON.parse(text);
+    var name = data && data[0] && data[0].Company_Name;
+    if (!name) return taxId;
+    return String(name).replace(/股份有限公司$/, '').replace(/有限公司$/, '');
+  } catch (err) {
+    return taxId;
+  }
+}
+
+function fail_(msg) {
+  return { ok: false, msg: msg };
+}
+
+function jsonOutput_(body) {
+  return ContentService
+    .createTextOutput(JSON.stringify(body))
+    .setMimeType(ContentService.MimeType.JSON);
+}
