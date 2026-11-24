@@ -14,15 +14,18 @@
     .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
     .row button { flex: 1 1 5.5rem; padding: 10px; border-radius: 8px; border: 1px solid #888; background: transparent; }
     .row button[aria-pressed="true"] { background: #1a73e8; color: #fff; border-color: #1a73e8; }
-    #reader { width: 100%; min-height: 220px; margin: 8px 0 12px; background: #111; border-radius: 8px; overflow: hidden; }
+    #reader { position: relative; width: 100%; min-height: 220px; margin: 8px 0 12px; background: #111; border-radius: 8px; overflow: hidden; }
+    #reader video { width: 100%; display: block; }
+    #qrbox { position: absolute; inset: 0; margin: auto; width: 65%; max-height: 70%; aspect-ratio: 1; border: 2px solid rgba(255,255,255,.75); border-radius: 8px; pointer-events: none; box-sizing: border-box; }
     .actions { display: flex; gap: 8px; margin-top: 16px; }
-    .actions button { flex: 1; padding: 14px; border: 0; border-radius: 8px; font-weight: 600; }
+    .actions button, .filebtn { flex: 1; padding: 14px; border: 0; border-radius: 8px; font-weight: 600; font-size: 1rem; text-align: center; cursor: pointer; }
     #sendAll, #backScan { background: #1a73e8; color: #fff; }
     #sendAll:disabled { opacity: .5; }
-    #deleteEntry { background: transparent; border: 1px solid #888; color: inherit; }
+    .filebtn, #manualEntry, #deleteEntry { background: transparent; border: 1px solid #888; color: inherit; }
+    .filebtn input { display: none; }
     #startCam, #stopCam, #parseManual { padding: 14px; border: 0; border-radius: 8px; font-weight: 600; }
-    #result, #error { white-space: pre-wrap; margin-top: 12px; }
-    #error { color: #c00; }
+    #result, #error, #fillError { white-space: pre-wrap; margin-top: 12px; }
+    #error, #fillError { color: #c00; }
     .ok { color: #0a7d32; }
     .hint { color: #666; font-size: .9rem; }
     #manual { margin-top: 8px; }
@@ -33,7 +36,6 @@
     #toast[hidden] { display: none; }
     #reader.flash { outline: 4px solid #0a7d32; outline-offset: 2px; }
     #scanView[hidden], #fillView[hidden] { display: none; }
-    #fillMeta { white-space: pre-wrap; margin: 0 0 12px; font-weight: 600; }
     .entry { border: 1px solid #ccc; border-radius: 8px; padding: 10px; margin: 8px 0; cursor: pointer; }
     .entry .meta { margin: 0; white-space: pre-wrap; }
     .entry.missing .meta { color: #c00; }
@@ -45,15 +47,21 @@
   <p id="toast" hidden></p>
 
   <div id="scanView">
-    <p class="hint">請掃證明聯<strong>左邊</strong>的 QR（有發票號碼的那張）。掃到會去填寫，再回去掃下一張，最後一次送出。</p>
+    <p class="hint">請掃證明聯<strong>左邊</strong>的 QR（對準中間框）。掃不太到可改拍照辨識，紙本發票可手動輸入。</p>
     <label id="camLabel" hidden>鏡頭
       <select id="camSelect"></select>
     </label>
-    <div id="reader"></div>
+    <div id="reader"><div id="qrbox"></div></div>
     <p class="hint">對準後還是糊的，點一下畫面可重新對焦。</p>
     <div class="actions">
       <button type="button" id="startCam">開啟相機</button>
       <button type="button" id="stopCam">關閉相機</button>
+    </div>
+    <div class="actions">
+      <label class="filebtn">拍照辨識
+        <input id="photo" type="file" accept="image/*" capture="environment">
+      </label>
+      <button type="button" id="manualEntry">手動輸入</button>
     </div>
     <label for="password">共用密碼</label>
     <input id="password" type="password" autocomplete="current-password">
@@ -69,27 +77,40 @@
   </div>
 
   <div id="fillView" hidden>
-    <p id="fillMeta"></p>
+    <label for="fillDate">發票日期</label>
+    <input id="fillDate" type="date">
+    <label for="fillNumber">發票號碼</label>
+    <input id="fillNumber" maxlength="10" placeholder="AB12345678，收據可空白" autocapitalize="characters" autocomplete="off">
+    <label for="fillSeller">賣方統編</label>
+    <input id="fillSeller" inputmode="numeric" maxlength="8" placeholder="傳統發票可空白" autocomplete="off">
+    <label for="fillTotal">含稅總額</label>
+    <input id="fillTotal" inputmode="decimal" placeholder="0">
+    <label for="fillType">發票類型</label>
+    <select id="fillType"></select>
     <label>憑證品項</label>
     <div class="row" id="fillItems"></div>
     <label>備註（可複選）</label>
     <div class="row" id="fillChips"></div>
     <input id="fillNoteText" placeholder="其他備註">
+    <p id="fillError"></p>
     <div class="actions">
       <button type="button" id="backScan">回去掃下一張</button>
       <button type="button" id="deleteEntry">刪除這張</button>
     </div>
   </div>
 
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script type="module">
     // 部署 Apps Script 網頁應用程式後，把網址貼在這裡。
     const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyeKUYClEQsz5fDUDvalD6TDTx0jHVR2ZFHKllwH341G1GtJAG7K2eFYht29oR7YdhNNA/exec';
     const ITEMS = ['餐費', '油錢', '停車費', '交通', '雜支'];
     const NOTE_CHIPS = ['飲料', '1人', '2人', '3人', '4人', '5人', '5人以上'];
+    const INVOICE_TYPES = ['01電子發票', '02傳統發票', '03收據'];
     const PASS_KEY = 'einvoice-password';
     const LIST_KEY = 'einvoice-queue';
     const CAM_KEY = 'einvoice-camera';
+    const ZXING_OPTS = { tryHarder: true, formats: ['QRCode'], maxNumberOfSymbols: 8 };
+    const SCAN_FPS = 12;
+    const CROP_RATIO = 0.65;
 
     let parseLeft = null;
     try {
@@ -109,21 +130,45 @@
       parseLeft = parsePrefix;
     }
 
+    let readBarcodes = null;
+    try {
+      const zx = await import('https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.7/dist/es/reader/index.js');
+      readBarcodes = zx.readBarcodes;
+    } catch {}
+
     const $ = (id) => document.getElementById(id);
     const errorEl = $('error');
+    const fillErrorEl = $('fillError');
     const resultEl = $('result');
     const passInput = $('password');
     passInput.value = localStorage.getItem(PASS_KEY) || '';
 
+    const typeSel = $('fillType');
+    INVOICE_TYPES.forEach((name) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      typeSel.appendChild(opt);
+    });
+
     let queue = loadList();
     let lastHandled = '';
-    let scanner = null;
     let starting = false;
     let running = false;
+    let looping = false;
+    let decoding = false;
+    let lastFrame = 0;
+    let stream = null;
+    let videoEl = null;
+    let cropCanvas = null;
     let editing = null;
 
     function showError(msg) {
       errorEl.textContent = msg || '';
+    }
+
+    function showFillError(msg) {
+      fillErrorEl.textContent = msg || '';
     }
 
     function composeNote(chips, text) {
@@ -154,8 +199,13 @@
       }
     }
 
+    function newLocalId() {
+      return 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+
     function normalizeEntry(e) {
-      if (!e || typeof e !== 'object' || !e.invoiceNumber) return null;
+      if (!e || typeof e !== 'object') return null;
+      if (!e.invoiceNumber && !e.localId) return null;
       let chips = Array.isArray(e.noteChips) ? e.noteChips.filter((c) => NOTE_CHIPS.includes(c)) : null;
       let text = e.noteText;
       if (!chips) {
@@ -166,6 +216,7 @@
       e.noteChips = NOTE_CHIPS.filter((c) => chips.includes(c));
       e.noteText = text || '';
       e.note = composeNote(e.noteChips, e.noteText);
+      if (!INVOICE_TYPES.includes(e.invoiceType)) e.invoiceType = INVOICE_TYPES[0];
       return e;
     }
 
@@ -192,6 +243,18 @@
       const sellerId = raw.slice(45, 53);
       if (!/^\d{8}$/.test(sellerId)) throw new Error('賣方統編格式不對');
       return { invoiceNumber, date: `${year}-${month}-${day}`, rocDate, sellerId, totalAmount };
+    }
+
+    function pickLeftText(texts) {
+      const list = (texts || []).map((t) => String(t || '').trim()).filter(Boolean);
+      for (const t of list) {
+        if (t.startsWith('**')) continue;
+        try {
+          parsePrefix(t);
+          return t;
+        } catch {}
+      }
+      return list.find((t) => t.startsWith('**')) || null;
     }
 
     let audioCtx = null;
@@ -252,6 +315,8 @@
         noteChips: [],
         noteText: '',
         note: '',
+        invoiceType: INVOICE_TYPES[0],
+        manual: false,
         status: '',
       };
       queue.unshift(entry);
@@ -280,6 +345,51 @@
       }
     }
 
+    async function textsFromSource(src) {
+      if (!readBarcodes) throw new Error('辨識套件載入失敗');
+      const results = await readBarcodes(src, ZXING_OPTS);
+      return (results || []).map((r) => String(r.text || '').trim()).filter(Boolean);
+    }
+
+    function drawScaled(bmp, maxSide) {
+      let w = bmp.width;
+      let h = bmp.height;
+      if (maxSide && Math.max(w, h) > maxSide) {
+        const s = maxSide / Math.max(w, h);
+        w = Math.round(w * s);
+        h = Math.round(h * s);
+      }
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+      return c;
+    }
+
+    async function decodePhoto(file) {
+      let picked = null;
+      try { picked = pickLeftText(await textsFromSource(file)); } catch {}
+      if (picked && !picked.startsWith('**')) return picked;
+      let bmp;
+      try { bmp = await createImageBitmap(file); } catch { return picked; }
+      try {
+        const sizes = [];
+        const long = Math.max(bmp.width, bmp.height);
+        if (long > 2000) sizes.push(0);
+        sizes.push(2000, 1200);
+        for (const max of sizes) {
+          const canvas = drawScaled(bmp, max || long);
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          try { picked = pickLeftText(await textsFromSource(data)); } catch { continue; }
+          if (picked && !picked.startsWith('**')) return picked;
+        }
+      } finally {
+        if (bmp && bmp.close) bmp.close();
+      }
+      return picked;
+    }
+
     function renderQueue() {
       const box = $('queue');
       box.replaceChildren();
@@ -294,7 +404,7 @@
         if (missing) div.classList.add('missing');
         const meta = document.createElement('p');
         meta.className = 'meta';
-        meta.textContent = `${entry.date}　${entry.invoiceNumber}　金額 ${entry.totalAmount}　${missing ? '未選品項' : entry.item}`;
+        meta.textContent = `${entry.date}　${entry.invoiceNumber || '無號碼'}　金額 ${entry.totalAmount}　${missing ? '未選品項' : entry.item}`;
         div.appendChild(meta);
         if (entry.status) {
           const st = document.createElement('p');
@@ -309,8 +419,16 @@
     }
 
     function renderFill(entry) {
-      $('fillMeta').textContent =
-        `日期：${entry.date}\n發票號碼：${entry.invoiceNumber}\n賣方統編：${entry.sellerId}\n金額：${entry.totalAmount}`;
+      showFillError('');
+      const editable = !!entry.manual;
+      $('fillDate').value = entry.date || '';
+      $('fillNumber').value = entry.invoiceNumber || '';
+      $('fillSeller').value = entry.sellerId || '';
+      $('fillTotal').value = entry.totalAmount === 0 || entry.totalAmount ? String(entry.totalAmount) : '';
+      $('fillType').value = INVOICE_TYPES.includes(entry.invoiceType) ? entry.invoiceType : INVOICE_TYPES[0];
+      ['fillDate', 'fillNumber', 'fillSeller', 'fillTotal', 'fillType'].forEach((id) => {
+        $(id).disabled = !editable;
+      });
       $('fillItems').querySelectorAll('button').forEach((b) => {
         b.setAttribute('aria-pressed', b.textContent === entry.item ? 'true' : 'false');
       });
@@ -329,12 +447,53 @@
       renderFill(entry);
     }
 
-    async function backToScan(restart) {
-      if (editing) {
-        editing.note = composeNote(editing.noteChips, editing.noteText);
-        saveList();
+    function todayIso() {
+      const d = new Date();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${d.getFullYear()}-${m}-${day}`;
+    }
+
+    function saveEditing() {
+      if (!editing) return true;
+      editing.note = composeNote(editing.noteChips, editing.noteText);
+      if (editing.manual) {
+        const date = $('fillDate').value;
+        const invoiceType = $('fillType').value;
+        let invoiceNumber = $('fillNumber').value.trim();
+        const sellerId = $('fillSeller').value.trim();
+        const totalRaw = $('fillTotal').value.trim();
+        const totalAmount = Number(totalRaw);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { showFillError('請填發票日期'); return false; }
+        if (!INVOICE_TYPES.includes(invoiceType)) { showFillError('請選發票類型'); return false; }
+        if (invoiceType === '03收據') {
+          if (invoiceNumber.length > 20 || /[\r\n\t]/.test(invoiceNumber)) { showFillError('收據號碼請在 20 字以內'); return false; }
+        } else {
+          invoiceNumber = invoiceNumber.toUpperCase();
+          if (!/^[A-Z]{2}\d{8}$/.test(invoiceNumber)) { showFillError('發票號碼格式不對（兩碼英文＋八碼數字）'); return false; }
+        }
+        if (sellerId && !/^\d{8}$/.test(sellerId)) { showFillError('賣方統編須為 8 碼數字，可空白'); return false; }
+        if (totalRaw === '' || !Number.isFinite(totalAmount) || totalAmount < 0) { showFillError('請填含稅總額'); return false; }
+        if (invoiceNumber && queue.some((e) => e !== editing && String(e.invoiceNumber || '').toUpperCase() === invoiceNumber.toUpperCase())) {
+          showFillError('清單裡已有這張');
+          return false;
+        }
+        editing.date = date;
+        editing.invoiceNumber = invoiceNumber;
+        editing.sellerId = sellerId;
+        editing.totalAmount = totalAmount;
+        editing.invoiceType = invoiceType;
+        if (!invoiceNumber && !editing.localId) editing.localId = newLocalId();
+        if (!queue.includes(editing)) queue.unshift(editing);
       }
+      saveList();
+      return true;
+    }
+
+    async function backToScan(restart) {
+      if (editing && !saveEditing()) return;
       editing = null;
+      showFillError('');
       $('fillView').hidden = true;
       $('scanView').hidden = false;
       renderQueue();
@@ -429,57 +588,87 @@
 
     async function listCams() {
       try {
-        const cams = await Html5Qrcode.getCameras();
+        const all = await navigator.mediaDevices.enumerateDevices();
+        const cams = all.filter((d) => d.kind === 'videoinput').map((d) => ({ id: d.deviceId, label: d.label }));
         fillCamSelect(cams);
-        return cams || [];
+        return cams;
       } catch {
         return [];
       }
     }
 
-    function qrboxSize(w, h) {
-      const s = Math.max(200, Math.floor(Math.min(w, h) * 0.72));
-      return { width: s, height: s };
+    function ensureVideo() {
+      const box = $('reader');
+      if (!videoEl) {
+        videoEl = document.createElement('video');
+        videoEl.setAttribute('playsinline', '');
+        videoEl.setAttribute('muted', '');
+        videoEl.muted = true;
+        videoEl.autoplay = true;
+        box.insertBefore(videoEl, $('qrbox'));
+      }
+      if (!cropCanvas) cropCanvas = document.createElement('canvas');
     }
 
     async function tryFocus() {
-      const video = document.querySelector('#reader video');
-      const stream = video && video.srcObject;
-      const track = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+      const track = stream && stream.getVideoTracks()[0];
       if (!track || !track.getCapabilities) return;
       let caps;
       try { caps = track.getCapabilities(); } catch { return; }
-      if (!caps.focusMode || !caps.focusMode.includes('continuous')) return;
-      try {
-        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
-      } catch {}
+      if (!caps.focusMode) return;
+      const mode = caps.focusMode.includes('continuous') ? 'continuous'
+        : caps.focusMode.includes('single-shot') ? 'single-shot' : '';
+      if (!mode) return;
+      try { await track.applyConstraints({ advanced: [{ focusMode: mode }] }); } catch {}
     }
 
     async function startWith(cameraId) {
-      if (!scanner) scanner = new Html5Qrcode('reader');
-      const constraints = { width: { ideal: 1920 }, height: { ideal: 1080 } };
-      let startArg;
-      if (cameraId) {
-        constraints.deviceId = { exact: cameraId };
-        startArg = cameraId;
-      } else {
-        constraints.facingMode = { ideal: 'environment' };
-        startArg = { facingMode: 'environment' };
+      const video = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      };
+      if (cameraId) video.deviceId = { exact: cameraId };
+      else video.facingMode = { ideal: 'environment' };
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
+      } catch (err) {
+        if (cameraId) return startWith('');
+        throw err;
       }
-      await scanner.start(
-        startArg,
-        {
-          fps: 12,
-          qrbox: qrboxSize,
-          experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-          videoConstraints: constraints,
-        },
-        handleScan,
-      );
-      if (cameraId) {
-        localStorage.setItem(CAM_KEY, cameraId);
-        if ($('camSelect').value !== cameraId) $('camSelect').value = cameraId;
+      ensureVideo();
+      videoEl.srcObject = stream;
+      await videoEl.play();
+      const id = stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings().deviceId;
+      if (id) {
+        localStorage.setItem(CAM_KEY, id);
+        if ($('camSelect').value !== id) $('camSelect').value = id;
       }
+    }
+
+    async function tick(t) {
+      if (!looping || !running) return;
+      requestAnimationFrame(tick);
+      if (decoding || editing) return;
+      if (t - lastFrame < 1000 / SCAN_FPS) return;
+      lastFrame = t;
+      if (!videoEl || videoEl.readyState < 2) return;
+      const w = videoEl.videoWidth;
+      const h = videoEl.videoHeight;
+      if (!w || !h) return;
+      const side = Math.max(1, Math.floor(Math.min(w, h) * CROP_RATIO));
+      const sx = Math.floor((w - side) / 2);
+      const sy = Math.floor((h - side) / 2);
+      cropCanvas.width = side;
+      cropCanvas.height = side;
+      const ctx = cropCanvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(videoEl, sx, sy, side, side, 0, 0, side, side);
+      const imageData = ctx.getImageData(0, 0, side, side);
+      decoding = true;
+      try {
+        const text = pickLeftText(await textsFromSource(imageData));
+        if (text) await handleScan(text);
+      } catch {}
+      decoding = false;
     }
 
     async function startCamera() {
@@ -487,8 +676,13 @@
       if (starting) return;
       starting = true;
       showError('');
-      if (!window.Html5Qrcode) {
-        showError('相機套件載入失敗，請改貼上 QR 文字');
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showError('這個瀏覽器不能開相機，請改拍照辨識或手動輸入');
+        starting = false;
+        return;
+      }
+      if (!readBarcodes) {
+        showError('辨識套件載入失敗，請改拍照辨識或手動輸入');
         starting = false;
         return;
       }
@@ -499,16 +693,20 @@
         await startWith(chosen);
         running = true;
         await tryFocus();
-        if (!cams.length) {
+        if (!cams.length || cams.every((c) => !c.label)) {
           cams = await listCams();
           const preferred = pickCam(cams);
-          if (preferred) {
+          const current = stream && stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings().deviceId;
+          if (preferred && preferred !== current) {
             await stopCamera();
             await startWith(preferred);
             running = true;
             await tryFocus();
           }
         }
+        looping = true;
+        lastFrame = 0;
+        requestAnimationFrame(tick);
       } catch (err) {
         running = false;
         showError('無法開啟相機：' + (err && err.message ? err.message : err));
@@ -518,9 +716,16 @@
     }
 
     async function stopCamera() {
+      looping = false;
       running = false;
-      if (!scanner) return;
-      try { await scanner.stop(); } catch {}
+      if (videoEl) {
+        try { videoEl.pause(); } catch {}
+        videoEl.srcObject = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+        stream = null;
+      }
     }
 
     async function postEntry(entry, password) {
@@ -535,6 +740,7 @@
           totalAmount: entry.totalAmount,
           item: entry.item,
           note: entry.note,
+          invoiceType: entry.invoiceType || INVOICE_TYPES[0],
         }),
         redirect: 'follow',
       });
@@ -557,6 +763,38 @@
       unlockAudio();
       lastHandled = '';
       handleScan($('manual').value);
+    });
+    $('photo').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      unlockAudio();
+      showError('');
+      try {
+        const text = await decodePhoto(file);
+        if (!text) throw new Error('辨識不到左邊的 QR，請再拍一次或改手動輸入');
+        lastHandled = '';
+        await handleScan(text);
+      } catch (err) {
+        showError(err.message || String(err));
+      }
+    });
+    $('manualEntry').addEventListener('click', async () => {
+      unlockAudio();
+      const draft = {
+        invoiceNumber: '',
+        date: todayIso(),
+        sellerId: '',
+        totalAmount: '',
+        item: '',
+        noteChips: [],
+        noteText: '',
+        note: '',
+        invoiceType: INVOICE_TYPES[0],
+        manual: true,
+        status: '',
+      };
+      await openFill(draft);
     });
 
     $('sendAll').addEventListener('click', async () => {
@@ -585,12 +823,12 @@
         try {
           const body = await postEntry(entry, password);
           if (body.ok) {
-            lines.push(`${entry.invoiceNumber}：成功（${body.tab}／第 ${body.row} 列）`);
+            lines.push(`${entry.invoiceNumber || '無號碼'}：成功（${body.tab}／第 ${body.row} 列）`);
           } else if (body.msg === '已經掃過') {
-            lines.push(`${entry.invoiceNumber}：已經掃過`);
+            lines.push(`${entry.invoiceNumber || '無號碼'}：已經掃過`);
           } else {
             entry.status = body.msg || '送出失敗';
-            lines.push(`${entry.invoiceNumber}：${entry.status}`);
+            lines.push(`${entry.invoiceNumber || '無號碼'}：${entry.status}`);
             keep.push(entry);
           }
         } catch (err) {
