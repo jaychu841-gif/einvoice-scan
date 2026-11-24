@@ -26,6 +26,11 @@
     .hint { color: #666; font-size: .9rem; }
     #manual { margin-top: 8px; }
     #camLabel select { width: auto; max-width: 100%; display: block; }
+    #toast { margin: 8px 0; padding: 10px 12px; border-radius: 8px; font-weight: 600; text-align: center; }
+    #toast.ok { background: #0a7d32; color: #fff; }
+    #toast.dup { background: #e6b800; color: #111; }
+    #toast[hidden] { display: none; }
+    #reader.flash { outline: 4px solid #0a7d32; outline-offset: 2px; }
     .entry { border: 1px solid #ccc; border-radius: 8px; padding: 10px; margin: 8px 0; }
     .entry .head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
     .entry .meta { margin: 0; white-space: pre-wrap; }
@@ -40,16 +45,12 @@
     <select id="camSelect"></select>
   </label>
   <div id="reader"></div>
+  <p id="toast" hidden></p>
   <p class="hint">對準後還是糊的，點一下畫面可重新對焦。</p>
   <div class="actions">
     <button type="button" id="startCam">開啟相機</button>
     <button type="button" id="stopCam">關閉相機</button>
   </div>
-  <label for="manual">或貼上 QR 文字</label>
-  <textarea id="manual" rows="3" placeholder="掃不到時可把 QR 內容貼在這裡"></textarea>
-  <button type="button" id="parseManual">解析文字</button>
-
-  <div id="queue"></div>
   <label for="password">共用密碼</label>
   <input id="password" type="password" autocomplete="current-password">
   <div class="actions">
@@ -57,6 +58,11 @@
   </div>
   <p id="error"></p>
   <p id="result"></p>
+  <div id="queue"></div>
+
+  <label for="manual">或貼上 QR 文字</label>
+  <textarea id="manual" rows="3" placeholder="掃不到時可把 QR 內容貼在這裡"></textarea>
+  <button type="button" id="parseManual">解析文字</button>
 
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script type="module">
@@ -134,12 +140,56 @@
       return { invoiceNumber, date: `${year}-${month}-${day}`, rocDate, sellerId, totalAmount };
     }
 
+    let audioCtx = null;
+    let toastTimer = 0;
+
+    function unlockAudio() {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!audioCtx) audioCtx = new AC();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+      } catch {}
+    }
+
+    function beep() {
+      try {
+        if (!audioCtx) return;
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.12);
+      } catch {}
+    }
+
+    function showToast(msg, kind) {
+      const el = $('toast');
+      el.textContent = msg;
+      el.className = kind;
+      el.hidden = false;
+      const reader = $('reader');
+      reader.classList.toggle('flash', kind === 'ok');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        el.hidden = true;
+        reader.classList.remove('flash');
+      }, 1500);
+    }
+
     function addEntry(data) {
       if (queue.some((e) => e.invoiceNumber === data.invoiceNumber)) {
-        showError('清單裡已有這張');
+        showToast('清單裡已有這張', 'dup');
+        showError('');
         return false;
       }
-      queue.push({
+      queue.unshift({
         invoiceNumber: data.invoiceNumber,
         date: data.date,
         sellerId: data.sellerId,
@@ -151,8 +201,9 @@
       saveList();
       renderQueue();
       showError('');
-      resultEl.className = 'ok';
-      resultEl.textContent = '已加入 ' + data.invoiceNumber;
+      showToast('已加入：' + data.invoiceNumber + '（共 ' + queue.length + ' 張）', 'ok');
+      try { if (navigator.vibrate) navigator.vibrate(150); } catch {}
+      beep();
       return true;
     }
 
@@ -340,6 +391,7 @@
     }
 
     async function startCamera() {
+      unlockAudio();
       if (starting) return;
       starting = true;
       showError('');
@@ -410,6 +462,7 @@
       if (running || starting) startCamera();
     });
     $('parseManual').addEventListener('click', () => {
+      unlockAudio();
       lastHandled = '';
       handleScan($('manual').value);
     });
@@ -431,7 +484,7 @@
       await stopCamera();
       const lines = [];
       const keep = [];
-      for (const entry of queue) {
+      for (const entry of [...queue].reverse()) {
         entry.item = String(entry.item || '').trim();
         entry.note = String(entry.note || '').trim();
         try {
@@ -451,7 +504,7 @@
           keep.push(entry);
         }
       }
-      queue = keep;
+      queue = keep.reverse();
       saveList();
       renderQueue();
       resultEl.className = keep.length ? '' : 'ok';
