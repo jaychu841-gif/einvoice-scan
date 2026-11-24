@@ -17,20 +17,30 @@
     #reader { width: 100%; min-height: 220px; margin: 8px 0 12px; background: #111; border-radius: 8px; overflow: hidden; }
     .actions { display: flex; gap: 8px; margin-top: 16px; }
     .actions button { flex: 1; padding: 14px; border: 0; border-radius: 8px; font-weight: 600; }
-    #submit { background: #1a73e8; color: #fff; }
-    #submit:disabled { opacity: .5; }
-    #rescan { background: #eee; color: inherit; }
-    #result, #error, #preview { white-space: pre-wrap; margin-top: 12px; }
+    #sendAll { background: #1a73e8; color: #fff; }
+    #sendAll:disabled { opacity: .5; }
+    #startCam, #stopCam, #parseManual { padding: 14px; border: 0; border-radius: 8px; font-weight: 600; }
+    #result, #error { white-space: pre-wrap; margin-top: 12px; }
     #error { color: #c00; }
     .ok { color: #0a7d32; }
     .hint { color: #666; font-size: .9rem; }
     #manual { margin-top: 8px; }
+    #camLabel select { width: auto; max-width: 100%; display: block; }
+    .entry { border: 1px solid #ccc; border-radius: 8px; padding: 10px; margin: 8px 0; }
+    .entry .head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+    .entry .meta { margin: 0; white-space: pre-wrap; }
+    .entry .remove { flex: 0 0 auto; padding: 6px 10px; border-radius: 8px; border: 1px solid #888; background: transparent; }
+    .entry .status { color: #c00; margin: 8px 0 0; }
   </style>
 </head>
 <body>
   <h1>發票掃碼</h1>
-  <p class="hint">請掃證明聯<strong>左邊</strong>的 QR（有發票號碼的那張）。</p>
+  <p class="hint">請掃證明聯<strong>左邊</strong>的 QR（有發票號碼的那張）。掃到會進清單，可以繼續掃，最後再一次送出。</p>
+  <label id="camLabel" hidden>鏡頭
+    <select id="camSelect"></select>
+  </label>
   <div id="reader"></div>
+  <p class="hint">對準後還是糊的，點一下畫面可重新對焦。</p>
   <div class="actions">
     <button type="button" id="startCam">開啟相機</button>
     <button type="button" id="stopCam">關閉相機</button>
@@ -39,19 +49,11 @@
   <textarea id="manual" rows="3" placeholder="掃不到時可把 QR 內容貼在這裡"></textarea>
   <button type="button" id="parseManual">解析文字</button>
 
-  <div id="preview" hidden>
-    <p id="parsed"></p>
-    <label>憑證品項</label>
-    <div class="row" id="items"></div>
-    <input id="item" placeholder="餐費、油錢，或自己輸入">
-    <label for="note">備註（選填）</label>
-    <input id="note" placeholder="幾人吃飯或要跟茵茵說明的">
-    <label for="password">共用密碼</label>
-    <input id="password" type="password" autocomplete="current-password">
-    <div class="actions">
-      <button type="button" id="rescan">再掃一張</button>
-      <button type="button" id="submit">送出</button>
-    </div>
+  <div id="queue"></div>
+  <label for="password">共用密碼</label>
+  <input id="password" type="password" autocomplete="current-password">
+  <div class="actions">
+    <button type="button" id="sendAll">全部送出</button>
   </div>
   <p id="error"></p>
   <p id="result"></p>
@@ -62,6 +64,8 @@
     const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyeKUYClEQsz5fDUDvalD6TDTx0jHVR2ZFHKllwH341G1GtJAG7K2eFYht29oR7YdhNNA/exec';
     const ITEMS = ['餐費', '油錢', '停車費', '交通', '雜支'];
     const PASS_KEY = 'einvoice-password';
+    const LIST_KEY = 'einvoice-queue';
+    const CAM_KEY = 'einvoice-camera';
 
     let parseLeft = null;
     try {
@@ -84,28 +88,30 @@
     const $ = (id) => document.getElementById(id);
     const errorEl = $('error');
     const resultEl = $('result');
-    const preview = $('preview');
-    const itemInput = $('item');
     const passInput = $('password');
     passInput.value = localStorage.getItem(PASS_KEY) || '';
 
-    const itemRow = $('items');
-    ITEMS.forEach((name) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = name;
-      btn.addEventListener('click', () => {
-        itemInput.value = name;
-        itemRow.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
-      });
-      itemRow.appendChild(btn);
-    });
-
-    let parsed = null;
+    let queue = loadList();
+    let lastHandled = '';
     let scanner = null;
+    let starting = false;
+    let running = false;
 
     function showError(msg) {
       errorEl.textContent = msg || '';
+    }
+
+    function loadList() {
+      try {
+        const arr = JSON.parse(localStorage.getItem(LIST_KEY) || '[]');
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveList() {
+      localStorage.setItem(LIST_KEY, JSON.stringify(queue));
     }
 
     function parsePrefix(text) {
@@ -128,66 +134,292 @@
       return { invoiceNumber, date: `${year}-${month}-${day}`, rocDate, sellerId, totalAmount };
     }
 
-    function applyParsed(data) {
-      parsed = data;
-      $('parsed').textContent =
-        `日期：${data.date}\n發票號碼：${data.invoiceNumber}\n賣方統編：${data.sellerId}\n金額：${data.totalAmount}`;
-      preview.hidden = false;
+    function addEntry(data) {
+      if (queue.some((e) => e.invoiceNumber === data.invoiceNumber)) {
+        showError('清單裡已有這張');
+        return false;
+      }
+      queue.push({
+        invoiceNumber: data.invoiceNumber,
+        date: data.date,
+        sellerId: data.sellerId,
+        totalAmount: data.totalAmount,
+        item: '',
+        note: '',
+        status: '',
+      });
+      saveList();
+      renderQueue();
       showError('');
-      resultEl.textContent = '';
+      resultEl.className = 'ok';
+      resultEl.textContent = '已加入 ' + data.invoiceNumber;
+      return true;
     }
 
     function handleScan(text) {
+      const raw = String(text || '').trim();
+      if (!raw || raw === lastHandled) return;
       try {
-        const raw = String(text || '').trim();
         if (raw.startsWith('**')) throw new Error('這是右邊的 QR，請改掃左邊（有發票號碼的那張）');
-        applyParsed(parseLeft(raw));
-        stopCamera();
+        const data = parseLeft(raw);
+        lastHandled = raw;
+        addEntry(data);
       } catch (err) {
+        lastHandled = raw;
         showError(err.message || String(err));
       }
     }
 
+    function renderQueue() {
+      const box = $('queue');
+      box.replaceChildren();
+      const count = document.createElement('p');
+      count.className = queue.length ? '' : 'hint';
+      count.textContent = queue.length ? '待送出 ' + queue.length + ' 張' : '還沒有發票';
+      box.appendChild(count);
+      queue.forEach((entry, i) => {
+        const div = document.createElement('div');
+        div.className = 'entry';
+        const head = document.createElement('div');
+        head.className = 'head';
+        const meta = document.createElement('p');
+        meta.className = 'meta';
+        meta.textContent = `${entry.date}　${entry.invoiceNumber}　統編 ${entry.sellerId}　金額 ${entry.totalAmount}`;
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'remove';
+        rm.textContent = '移除';
+        rm.addEventListener('click', () => {
+          queue.splice(i, 1);
+          if (lastHandled && lastHandled.includes(entry.invoiceNumber)) lastHandled = '';
+          saveList();
+          renderQueue();
+        });
+        head.append(meta, rm);
+
+        const itemLabel = document.createElement('label');
+        itemLabel.textContent = '憑證品項';
+        const row = document.createElement('div');
+        row.className = 'row';
+        const itemInput = document.createElement('input');
+        itemInput.placeholder = '餐費、油錢，或自己輸入';
+        itemInput.value = entry.item || '';
+        ITEMS.forEach((name) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = name;
+          btn.setAttribute('aria-pressed', entry.item === name ? 'true' : 'false');
+          btn.addEventListener('click', () => {
+            entry.item = name;
+            itemInput.value = name;
+            row.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+            saveList();
+          });
+          row.appendChild(btn);
+        });
+        itemInput.addEventListener('input', () => {
+          entry.item = itemInput.value;
+          row.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b.textContent === entry.item ? 'true' : 'false'));
+          saveList();
+        });
+
+        const noteLabel = document.createElement('label');
+        noteLabel.textContent = '備註（選填）';
+        const noteInput = document.createElement('input');
+        noteInput.placeholder = '幾人吃飯或要跟茵茵說明的';
+        noteInput.value = entry.note || '';
+        noteInput.addEventListener('input', () => {
+          entry.note = noteInput.value;
+          saveList();
+        });
+
+        div.append(head, itemLabel, row, itemInput, noteLabel, noteInput);
+        if (entry.status) {
+          const st = document.createElement('p');
+          st.className = 'status';
+          st.textContent = entry.status;
+          div.appendChild(st);
+        }
+        box.appendChild(div);
+      });
+      $('sendAll').disabled = queue.length === 0;
+    }
+
+    function scoreCam(cam) {
+      const l = String(cam.label || '').toLowerCase();
+      if (/front|user|前置|前鏡頭/.test(l)) return -2;
+      if (/ultra\s*wide|超廣角/.test(l)) return -1;
+      if (/telephoto|望遠/.test(l)) return -1;
+      const back = /back|rear|後置|後鏡頭|facing back/.test(l);
+      const plain = /(back camera|後置相機)/.test(l) && !/ultra|tele|超廣|望遠|dual|triple/.test(l);
+      if (plain) return 4;
+      if (back && !/dual|triple/.test(l)) return 3;
+      if (back) return 2;
+      return 0;
+    }
+
+    function pickCam(cams) {
+      if (!cams || !cams.length) return '';
+      const saved = localStorage.getItem(CAM_KEY);
+      if (saved && cams.some((c) => c.id === saved)) return saved;
+      return cams.slice().sort((a, b) => scoreCam(b) - scoreCam(a))[0].id;
+    }
+
+    function fillCamSelect(cams) {
+      const sel = $('camSelect');
+      const label = $('camLabel');
+      if (!cams || !cams.length) {
+        label.hidden = true;
+        return;
+      }
+      const current = sel.value || pickCam(cams);
+      sel.replaceChildren();
+      cams.forEach((c, i) => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.label || ('鏡頭 ' + (i + 1));
+        sel.appendChild(opt);
+      });
+      if (current && cams.some((c) => c.id === current)) sel.value = current;
+      label.hidden = false;
+    }
+
+    async function listCams() {
+      try {
+        const cams = await Html5Qrcode.getCameras();
+        fillCamSelect(cams);
+        return cams || [];
+      } catch {
+        return [];
+      }
+    }
+
+    function qrboxSize(w, h) {
+      const s = Math.max(200, Math.floor(Math.min(w, h) * 0.72));
+      return { width: s, height: s };
+    }
+
+    async function tryFocus() {
+      const video = document.querySelector('#reader video');
+      const stream = video && video.srcObject;
+      const track = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+      if (!track || !track.getCapabilities) return;
+      let caps;
+      try { caps = track.getCapabilities(); } catch { return; }
+      if (!caps.focusMode || !caps.focusMode.includes('continuous')) return;
+      try {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+      } catch {}
+    }
+
+    async function startWith(cameraId) {
+      if (!scanner) scanner = new Html5Qrcode('reader');
+      const constraints = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+      let startArg;
+      if (cameraId) {
+        constraints.deviceId = { exact: cameraId };
+        startArg = cameraId;
+      } else {
+        constraints.facingMode = { ideal: 'environment' };
+        startArg = { facingMode: 'environment' };
+      }
+      await scanner.start(
+        startArg,
+        {
+          fps: 12,
+          qrbox: qrboxSize,
+          experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+          videoConstraints: constraints,
+        },
+        handleScan,
+      );
+      if (cameraId) {
+        localStorage.setItem(CAM_KEY, cameraId);
+        if ($('camSelect').value !== cameraId) $('camSelect').value = cameraId;
+      }
+    }
+
     async function startCamera() {
+      if (starting) return;
+      starting = true;
       showError('');
       if (!window.Html5Qrcode) {
         showError('相機套件載入失敗，請改貼上 QR 文字');
+        starting = false;
         return;
       }
-      if (!scanner) scanner = new Html5Qrcode('reader');
       try {
-        await scanner.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
-          (text) => handleScan(text),
-        );
+        if (running) await stopCamera();
+        let cams = await listCams();
+        const chosen = $('camSelect').value || pickCam(cams);
+        await startWith(chosen);
+        running = true;
+        await tryFocus();
+        if (!cams.length) {
+          cams = await listCams();
+          const preferred = pickCam(cams);
+          if (preferred) {
+            await stopCamera();
+            await startWith(preferred);
+            running = true;
+            await tryFocus();
+          }
+        }
       } catch (err) {
+        running = false;
         showError('無法開啟相機：' + (err && err.message ? err.message : err));
+      } finally {
+        starting = false;
       }
     }
 
     async function stopCamera() {
+      running = false;
       if (!scanner) return;
       try { await scanner.stop(); } catch {}
     }
 
+    async function postEntry(entry, password) {
+      const res = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          password,
+          invoiceNumber: entry.invoiceNumber,
+          date: entry.date,
+          sellerId: entry.sellerId,
+          totalAmount: entry.totalAmount,
+          item: entry.item,
+          note: entry.note,
+        }),
+        redirect: 'follow',
+      });
+      const text = await res.text();
+      let body;
+      try { body = JSON.parse(text); } catch { throw new Error('伺服器回應不是 JSON：' + text.slice(0, 200)); }
+      return body;
+    }
+
     $('startCam').addEventListener('click', startCamera);
     $('stopCam').addEventListener('click', stopCamera);
-    $('parseManual').addEventListener('click', () => handleScan($('manual').value));
-    $('rescan').addEventListener('click', () => {
-      parsed = null;
-      preview.hidden = true;
-      showError('');
-      resultEl.textContent = '';
-      startCamera();
+    $('reader').addEventListener('click', () => {
+      if (running && !starting) startCamera();
+    });
+    $('camSelect').addEventListener('change', () => {
+      localStorage.setItem(CAM_KEY, $('camSelect').value);
+      if (running || starting) startCamera();
+    });
+    $('parseManual').addEventListener('click', () => {
+      lastHandled = '';
+      handleScan($('manual').value);
     });
 
-    $('submit').addEventListener('click', async () => {
+    $('sendAll').addEventListener('click', async () => {
       showError('');
       resultEl.textContent = '';
-      if (!parsed) { showError('請先掃描發票'); return; }
-      const item = itemInput.value.trim();
-      if (!item) { showError('請選憑證品項'); return; }
+      resultEl.className = '';
+      if (!queue.length) { showError('請先掃描發票'); return; }
+      if (queue.some((e) => !String(e.item || '').trim())) { showError('每張都要選憑證品項'); return; }
       const password = passInput.value;
       if (!password) { showError('請輸入共用密碼'); return; }
       if (!SCRIPT_URL || SCRIPT_URL.startsWith('PASTE_')) {
@@ -195,38 +427,38 @@
         return;
       }
       localStorage.setItem(PASS_KEY, password);
-      $('submit').disabled = true;
-      try {
-        const res = await fetch(SCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            password,
-            invoiceNumber: parsed.invoiceNumber,
-            date: parsed.date,
-            sellerId: parsed.sellerId,
-            totalAmount: parsed.totalAmount,
-            item,
-            note: $('note').value.trim(),
-          }),
-          redirect: 'follow',
-        });
-        const text = await res.text();
-        let body;
-        try { body = JSON.parse(text); } catch { throw new Error('伺服器回應不是 JSON：' + text.slice(0, 200)); }
-        if (body.ok) {
-          resultEl.className = 'ok';
-          resultEl.textContent = `${body.msg}\n分頁：${body.tab}　第 ${body.row} 列\n受款單位：${body.seller}`;
-        } else {
-          resultEl.className = '';
-          resultEl.textContent = body.msg || '送出失敗';
+      $('sendAll').disabled = true;
+      await stopCamera();
+      const lines = [];
+      const keep = [];
+      for (const entry of queue) {
+        entry.item = String(entry.item || '').trim();
+        entry.note = String(entry.note || '').trim();
+        try {
+          const body = await postEntry(entry, password);
+          if (body.ok) {
+            lines.push(`${entry.invoiceNumber}：成功（${body.tab}／第 ${body.row} 列）`);
+          } else if (body.msg === '已經掃過') {
+            lines.push(`${entry.invoiceNumber}：已經掃過`);
+          } else {
+            entry.status = body.msg || '送出失敗';
+            lines.push(`${entry.invoiceNumber}：${entry.status}`);
+            keep.push(entry);
+          }
+        } catch (err) {
+          entry.status = err.message || String(err);
+          lines.push(`${entry.invoiceNumber}：${entry.status}`);
+          keep.push(entry);
         }
-      } catch (err) {
-        showError(err.message || String(err));
-      } finally {
-        $('submit').disabled = false;
       }
+      queue = keep;
+      saveList();
+      renderQueue();
+      resultEl.className = keep.length ? '' : 'ok';
+      resultEl.textContent = lines.join('\n');
     });
+
+    renderQueue();
   </script>
 </body>
 </html>
