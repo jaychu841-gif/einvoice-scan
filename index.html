@@ -17,8 +17,9 @@
     #reader { width: 100%; min-height: 220px; margin: 8px 0 12px; background: #111; border-radius: 8px; overflow: hidden; }
     .actions { display: flex; gap: 8px; margin-top: 16px; }
     .actions button { flex: 1; padding: 14px; border: 0; border-radius: 8px; font-weight: 600; }
-    #sendAll { background: #1a73e8; color: #fff; }
+    #sendAll, #backScan { background: #1a73e8; color: #fff; }
     #sendAll:disabled { opacity: .5; }
+    #deleteEntry { background: transparent; border: 1px solid #888; color: inherit; }
     #startCam, #stopCam, #parseManual { padding: 14px; border: 0; border-radius: 8px; font-weight: 600; }
     #result, #error { white-space: pre-wrap; margin-top: 12px; }
     #error { color: #c00; }
@@ -26,49 +27,66 @@
     .hint { color: #666; font-size: .9rem; }
     #manual { margin-top: 8px; }
     #camLabel select { width: auto; max-width: 100%; display: block; }
-    #toast { margin: 8px 0; padding: 10px 12px; border-radius: 8px; font-weight: 600; text-align: center; }
+    #toast { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; font-weight: 600; text-align: center; }
     #toast.ok { background: #0a7d32; color: #fff; }
     #toast.dup { background: #e6b800; color: #111; }
     #toast[hidden] { display: none; }
     #reader.flash { outline: 4px solid #0a7d32; outline-offset: 2px; }
-    .entry { border: 1px solid #ccc; border-radius: 8px; padding: 10px; margin: 8px 0; }
-    .entry .head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+    #scanView[hidden], #fillView[hidden] { display: none; }
+    #fillMeta { white-space: pre-wrap; margin: 0 0 12px; font-weight: 600; }
+    .entry { border: 1px solid #ccc; border-radius: 8px; padding: 10px; margin: 8px 0; cursor: pointer; }
     .entry .meta { margin: 0; white-space: pre-wrap; }
-    .entry .remove { flex: 0 0 auto; padding: 6px 10px; border-radius: 8px; border: 1px solid #888; background: transparent; }
+    .entry.missing .meta { color: #c00; }
     .entry .status { color: #c00; margin: 8px 0 0; }
   </style>
 </head>
 <body>
   <h1>發票掃碼</h1>
-  <p class="hint">請掃證明聯<strong>左邊</strong>的 QR（有發票號碼的那張）。掃到會進清單，可以繼續掃，最後再一次送出。</p>
-  <label id="camLabel" hidden>鏡頭
-    <select id="camSelect"></select>
-  </label>
-  <div id="reader"></div>
   <p id="toast" hidden></p>
-  <p class="hint">對準後還是糊的，點一下畫面可重新對焦。</p>
-  <div class="actions">
-    <button type="button" id="startCam">開啟相機</button>
-    <button type="button" id="stopCam">關閉相機</button>
-  </div>
-  <label for="password">共用密碼</label>
-  <input id="password" type="password" autocomplete="current-password">
-  <div class="actions">
-    <button type="button" id="sendAll">全部送出</button>
-  </div>
-  <p id="error"></p>
-  <p id="result"></p>
-  <div id="queue"></div>
 
-  <label for="manual">或貼上 QR 文字</label>
-  <textarea id="manual" rows="3" placeholder="掃不到時可把 QR 內容貼在這裡"></textarea>
-  <button type="button" id="parseManual">解析文字</button>
+  <div id="scanView">
+    <p class="hint">請掃證明聯<strong>左邊</strong>的 QR（有發票號碼的那張）。掃到會去填寫，再回去掃下一張，最後一次送出。</p>
+    <label id="camLabel" hidden>鏡頭
+      <select id="camSelect"></select>
+    </label>
+    <div id="reader"></div>
+    <p class="hint">對準後還是糊的，點一下畫面可重新對焦。</p>
+    <div class="actions">
+      <button type="button" id="startCam">開啟相機</button>
+      <button type="button" id="stopCam">關閉相機</button>
+    </div>
+    <label for="password">共用密碼</label>
+    <input id="password" type="password" autocomplete="current-password">
+    <div class="actions">
+      <button type="button" id="sendAll">全部送出</button>
+    </div>
+    <p id="error"></p>
+    <p id="result"></p>
+    <div id="queue"></div>
+    <label for="manual">或貼上 QR 文字</label>
+    <textarea id="manual" rows="3" placeholder="掃不到時可把 QR 內容貼在這裡"></textarea>
+    <button type="button" id="parseManual">解析文字</button>
+  </div>
+
+  <div id="fillView" hidden>
+    <p id="fillMeta"></p>
+    <label>憑證品項</label>
+    <div class="row" id="fillItems"></div>
+    <label>備註（可複選）</label>
+    <div class="row" id="fillChips"></div>
+    <input id="fillNoteText" placeholder="其他備註">
+    <div class="actions">
+      <button type="button" id="backScan">回去掃下一張</button>
+      <button type="button" id="deleteEntry">刪除這張</button>
+    </div>
+  </div>
 
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script type="module">
     // 部署 Apps Script 網頁應用程式後，把網址貼在這裡。
     const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyeKUYClEQsz5fDUDvalD6TDTx0jHVR2ZFHKllwH341G1GtJAG7K2eFYht29oR7YdhNNA/exec';
     const ITEMS = ['餐費', '油錢', '停車費', '交通', '雜支'];
+    const NOTE_CHIPS = ['飲料', '1人', '2人', '3人', '4人', '5人', '5人以上'];
     const PASS_KEY = 'einvoice-password';
     const LIST_KEY = 'einvoice-queue';
     const CAM_KEY = 'einvoice-camera';
@@ -102,21 +120,57 @@
     let scanner = null;
     let starting = false;
     let running = false;
+    let editing = null;
 
     function showError(msg) {
       errorEl.textContent = msg || '';
     }
 
+    function composeNote(chips, text) {
+      const parts = NOTE_CHIPS.filter((c) => chips && chips.includes(c));
+      const extra = String(text || '').trim();
+      if (extra) parts.push(extra);
+      return parts.join('、');
+    }
+
+    function splitNote(note) {
+      const parts = String(note || '').split('、').map((s) => s.trim()).filter(Boolean);
+      const chips = [];
+      const rest = [];
+      for (const p of parts) {
+        if (NOTE_CHIPS.includes(p) && !chips.includes(p)) chips.push(p);
+        else rest.push(p);
+      }
+      return { noteChips: NOTE_CHIPS.filter((c) => chips.includes(c)), noteText: rest.join('、') };
+    }
+
     function loadList() {
       try {
         const arr = JSON.parse(localStorage.getItem(LIST_KEY) || '[]');
-        return Array.isArray(arr) ? arr : [];
+        if (!Array.isArray(arr)) return [];
+        return arr.map((e) => normalizeEntry(e)).filter(Boolean);
       } catch {
         return [];
       }
     }
 
+    function normalizeEntry(e) {
+      if (!e || typeof e !== 'object' || !e.invoiceNumber) return null;
+      let chips = Array.isArray(e.noteChips) ? e.noteChips.filter((c) => NOTE_CHIPS.includes(c)) : null;
+      let text = e.noteText;
+      if (!chips) {
+        const split = splitNote(e.note);
+        chips = split.noteChips;
+        if (text == null) text = split.noteText;
+      }
+      e.noteChips = NOTE_CHIPS.filter((c) => chips.includes(c));
+      e.noteText = text || '';
+      e.note = composeNote(e.noteChips, e.noteText);
+      return e;
+    }
+
     function saveList() {
+      if (editing) editing.note = composeNote(editing.noteChips, editing.noteText);
       localStorage.setItem(LIST_KEY, JSON.stringify(queue));
     }
 
@@ -187,34 +241,39 @@
       if (queue.some((e) => e.invoiceNumber === data.invoiceNumber)) {
         showToast('清單裡已有這張', 'dup');
         showError('');
-        return false;
+        return null;
       }
-      queue.unshift({
+      const entry = {
         invoiceNumber: data.invoiceNumber,
         date: data.date,
         sellerId: data.sellerId,
         totalAmount: data.totalAmount,
         item: '',
+        noteChips: [],
+        noteText: '',
         note: '',
         status: '',
-      });
+      };
+      queue.unshift(entry);
       saveList();
       renderQueue();
       showError('');
       showToast('已加入：' + data.invoiceNumber + '（共 ' + queue.length + ' 張）', 'ok');
       try { if (navigator.vibrate) navigator.vibrate(150); } catch {}
       beep();
-      return true;
+      return entry;
     }
 
-    function handleScan(text) {
+    async function handleScan(text) {
+      if (editing) return;
       const raw = String(text || '').trim();
       if (!raw || raw === lastHandled) return;
       try {
         if (raw.startsWith('**')) throw new Error('這是右邊的 QR，請改掃左邊（有發票號碼的那張）');
         const data = parseLeft(raw);
         lastHandled = raw;
-        addEntry(data);
+        const entry = addEntry(data);
+        if (entry) await openFill(entry);
       } catch (err) {
         lastHandled = raw;
         showError(err.message || String(err));
@@ -226,75 +285,108 @@
       box.replaceChildren();
       const count = document.createElement('p');
       count.className = queue.length ? '' : 'hint';
-      count.textContent = queue.length ? '待送出 ' + queue.length + ' 張' : '還沒有發票';
+      count.textContent = queue.length ? '待送出 ' + queue.length + ' 張（點一筆可改）' : '還沒有發票';
       box.appendChild(count);
-      queue.forEach((entry, i) => {
+      queue.forEach((entry) => {
         const div = document.createElement('div');
         div.className = 'entry';
-        const head = document.createElement('div');
-        head.className = 'head';
+        const missing = !String(entry.item || '').trim();
+        if (missing) div.classList.add('missing');
         const meta = document.createElement('p');
         meta.className = 'meta';
-        meta.textContent = `${entry.date}　${entry.invoiceNumber}　統編 ${entry.sellerId}　金額 ${entry.totalAmount}`;
-        const rm = document.createElement('button');
-        rm.type = 'button';
-        rm.className = 'remove';
-        rm.textContent = '移除';
-        rm.addEventListener('click', () => {
-          queue.splice(i, 1);
-          if (lastHandled && lastHandled.includes(entry.invoiceNumber)) lastHandled = '';
-          saveList();
-          renderQueue();
-        });
-        head.append(meta, rm);
-
-        const itemLabel = document.createElement('label');
-        itemLabel.textContent = '憑證品項';
-        const row = document.createElement('div');
-        row.className = 'row';
-        const itemInput = document.createElement('input');
-        itemInput.placeholder = '餐費、油錢，或自己輸入';
-        itemInput.value = entry.item || '';
-        ITEMS.forEach((name) => {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.textContent = name;
-          btn.setAttribute('aria-pressed', entry.item === name ? 'true' : 'false');
-          btn.addEventListener('click', () => {
-            entry.item = name;
-            itemInput.value = name;
-            row.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
-            saveList();
-          });
-          row.appendChild(btn);
-        });
-        itemInput.addEventListener('input', () => {
-          entry.item = itemInput.value;
-          row.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b.textContent === entry.item ? 'true' : 'false'));
-          saveList();
-        });
-
-        const noteLabel = document.createElement('label');
-        noteLabel.textContent = '備註（選填）';
-        const noteInput = document.createElement('input');
-        noteInput.placeholder = '幾人吃飯或要跟茵茵說明的';
-        noteInput.value = entry.note || '';
-        noteInput.addEventListener('input', () => {
-          entry.note = noteInput.value;
-          saveList();
-        });
-
-        div.append(head, itemLabel, row, itemInput, noteLabel, noteInput);
+        meta.textContent = `${entry.date}　${entry.invoiceNumber}　金額 ${entry.totalAmount}　${missing ? '未選品項' : entry.item}`;
+        div.appendChild(meta);
         if (entry.status) {
           const st = document.createElement('p');
           st.className = 'status';
           st.textContent = entry.status;
           div.appendChild(st);
         }
+        div.addEventListener('click', () => openFill(entry));
         box.appendChild(div);
       });
       $('sendAll').disabled = queue.length === 0;
     }
+
+    function renderFill(entry) {
+      $('fillMeta').textContent =
+        `日期：${entry.date}\n發票號碼：${entry.invoiceNumber}\n賣方統編：${entry.sellerId}\n金額：${entry.totalAmount}`;
+      $('fillItems').querySelectorAll('button').forEach((b) => {
+        b.setAttribute('aria-pressed', b.textContent === entry.item ? 'true' : 'false');
+      });
+      const selected = new Set(entry.noteChips || []);
+      $('fillChips').querySelectorAll('button').forEach((b) => {
+        b.setAttribute('aria-pressed', selected.has(b.textContent) ? 'true' : 'false');
+      });
+      $('fillNoteText').value = entry.noteText || '';
+    }
+
+    async function openFill(entry) {
+      await stopCamera();
+      editing = entry;
+      $('scanView').hidden = true;
+      $('fillView').hidden = false;
+      renderFill(entry);
+    }
+
+    async function backToScan(restart) {
+      if (editing) {
+        editing.note = composeNote(editing.noteChips, editing.noteText);
+        saveList();
+      }
+      editing = null;
+      $('fillView').hidden = true;
+      $('scanView').hidden = false;
+      renderQueue();
+      if (restart) await startCamera();
+    }
+
+    ITEMS.forEach((name) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = name;
+      btn.addEventListener('click', () => {
+        if (!editing) return;
+        editing.item = name;
+        $('fillItems').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+        saveList();
+      });
+      $('fillItems').appendChild(btn);
+    });
+
+    NOTE_CHIPS.forEach((name) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = name;
+      btn.addEventListener('click', () => {
+        if (!editing) return;
+        const on = !(editing.noteChips || []).includes(name);
+        const set = new Set(editing.noteChips || []);
+        if (on) set.add(name); else set.delete(name);
+        editing.noteChips = NOTE_CHIPS.filter((c) => set.has(c));
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        saveList();
+      });
+      $('fillChips').appendChild(btn);
+    });
+
+    $('fillNoteText').addEventListener('input', () => {
+      if (!editing) return;
+      editing.noteText = $('fillNoteText').value;
+      saveList();
+    });
+
+    $('backScan').addEventListener('click', () => backToScan(true));
+    $('deleteEntry').addEventListener('click', () => {
+      if (editing) {
+        const i = queue.indexOf(editing);
+        if (i >= 0) queue.splice(i, 1);
+        if (lastHandled && lastHandled.includes(editing.invoiceNumber)) lastHandled = '';
+        editing = null;
+        saveList();
+      }
+      backToScan(true);
+    });
 
     function scoreCam(cam) {
       const l = String(cam.label || '').toLowerCase();
@@ -472,7 +564,10 @@
       resultEl.textContent = '';
       resultEl.className = '';
       if (!queue.length) { showError('請先掃描發票'); return; }
-      if (queue.some((e) => !String(e.item || '').trim())) { showError('每張都要選憑證品項'); return; }
+      if (queue.some((e) => !String(e.item || '').trim())) {
+        showError('還有發票沒選憑證品項，請點清單補填');
+        return;
+      }
       const password = passInput.value;
       if (!password) { showError('請輸入共用密碼'); return; }
       if (!SCRIPT_URL || SCRIPT_URL.startsWith('PASTE_')) {
@@ -486,7 +581,7 @@
       const keep = [];
       for (const entry of [...queue].reverse()) {
         entry.item = String(entry.item || '').trim();
-        entry.note = String(entry.note || '').trim();
+        entry.note = composeNote(entry.noteChips, entry.noteText);
         try {
           const body = await postEntry(entry, password);
           if (body.ok) {
